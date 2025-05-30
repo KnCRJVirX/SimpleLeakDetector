@@ -13,8 +13,11 @@
 #define LEAK_DETECTOR_FREE_CALL_EVENT 0xE00000F3
 
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
+#include <unordered_set>
 #include <map>
 
 #include <windows.h>
@@ -45,13 +48,60 @@ static inline const char* DebugEventToString(DWORD dbgEventCode)
     return NULL;
 }
 
+// 全局单例
+class Log {
+private:
+    std::ofstream logFile;
+
+    Log() {
+        logFile.open("MemoryLeakDetect.log");
+    }
+
+    ~Log() {
+        if (logFile.is_open())
+            logFile.close();
+    }
+
+public:
+    static Log& getInstance() {
+        static Log instance;  // C++11 后线程安全，初始化顺序明确
+        return instance;
+    }
+
+    void setLogFile(const std::string& logFileName) {
+        logFile.close();
+        logFile.open(logFileName);
+    }
+
+    template<typename T>
+    Log& operator<<(const T& val) {
+        std::cout << val;
+        if (logFile.is_open())
+            logFile << val;
+        return *this;
+    }
+
+    Log& operator<<(std::ostream& (*manip)(std::ostream&)) {
+        manip(std::cout);
+        if (logFile.is_open())
+            manip(logFile);
+        return *this;
+    }
+
+    // 禁止复制
+    Log(const Log&) = delete;
+    Log& operator=(const Log&) = delete;
+};
+#define LOG Log::getInstance()
+
 // 栈帧信息
 struct StackFrameInfo
 {
     void* funcAddr;
     std::string funcName;
+    std::string moduleName;
     StackFrameInfo(): funcAddr(nullptr), funcName(""){}
-    StackFrameInfo(void* _Addr = nullptr, std::string _Name = ""): funcAddr(_Addr), funcName(_Name){}
+    StackFrameInfo(void* _Addr = nullptr, std::string _Name = "", std::string _Module = ""): funcAddr(_Addr), funcName(_Name), moduleName(_Module){}
 };
 
 // 内存块被获取的方法（用什么函数获取的堆内存）
@@ -130,6 +180,18 @@ private:
         }
         return "";
     }
+    std::string get_module_name(DWORD64 funcAddr)
+    {
+        DWORD64 moduleBaseAddr = SymGetModuleBase64(hProcess, funcAddr);
+        if (moduleBaseAddr == (DWORD64)NULL) return "";
+
+        IMAGEHLP_MODULE64 moduleInfo = {0};
+        moduleInfo.SizeOfStruct = sizeof(IMAGEHLP_MODULE64);
+        if (SymGetModuleInfo64(hProcess, moduleBaseAddr, &moduleInfo)) {
+            return std::string(moduleInfo.ModuleName);
+        }
+        return "";
+    }
     std::vector<StackFrameInfo> get_stack_trace(DWORD threadId)
     {
         HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, threadId);
@@ -156,7 +218,7 @@ private:
         frame.AddrStack.Mode   = AddrModeFlat;
 
         std::vector<StackFrameInfo> stackTrace;
-        for (int i = 0; i < 20; ++i) {
+        for (int i = 0; i < 1024; ++i) {
             if (!StackWalk64(machineType, hProcess, hThread, &frame, &context,
                 NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
                 break;
@@ -165,8 +227,8 @@ private:
             // 跳过RaiseException
             if (i < 2) continue;
 
-            stackTrace.push_back(StackFrameInfo((void*)frame.AddrPC.Offset, get_func_name(frame.AddrPC.Offset)));
-            // std::cout << "Address: " << std::hex << frame.AddrPC.Offset << std::dec << " Name: " << get_func_name(frame.AddrPC.Offset) << std::endl;
+            stackTrace.push_back(StackFrameInfo((void*)frame.AddrPC.Offset, get_func_name(frame.AddrPC.Offset), get_module_name(frame.AddrPC.Offset)));
+            // LOG << "Address: " << std::hex << frame.AddrPC.Offset << std::dec << " Name: " << get_func_name(frame.AddrPC.Offset) << std::endl;
         }
 
         ResumeThread(hThread);
@@ -189,7 +251,7 @@ public:
         info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
 
         log.insert({ret_memory, info});
-        // std::cout << "malloc(" << alloc_size << "), retval = " << std::hex << ret_memory << std::dec << std::endl;
+        // LOG << "malloc(" << alloc_size << "), retval = " << std::hex << ret_memory << std::dec << std::endl;
         return DBG_CONTINUE;
     }
     int on_calloc_call_event(DEBUG_EVENT* dbgEvent)
@@ -203,7 +265,7 @@ public:
         info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
 
         log.insert({ret_memory, info});
-        // std::cout << "calloc(" << num_of_elem << ", " << siz_of_elem << "), retval = " << std::hex << ret_memory << std::dec << std::endl;
+        // LOG << "calloc(" << num_of_elem << ", " << siz_of_elem << "), retval = " << std::hex << ret_memory << std::dec << std::endl;
         return DBG_CONTINUE;
     }
     int on_free_call_event(DEBUG_EVENT* dbgEvent)
@@ -214,7 +276,7 @@ public:
         {
             log[free_memory].is_free = true;
         }
-        // std::cout << "free(" << std::hex << free_memory << std::dec << ")" << std::endl;
+        // LOG << "free(" << std::hex << free_memory << std::dec << ")" << std::endl;
         return DBG_CONTINUE;
     }
     // 根据ExceptionCode分发到handler
@@ -249,11 +311,43 @@ public:
     }
 };
 
+void PrintLeakMemoryInfo(MemoryLogger& logger)
+{
+    LOG << std::endl;
+    auto leak_memories = logger.get_leak_info();
+    for (auto& info : leak_memories)
+    {
+        LOG << "Possible leak " << info.size() << " bytes." << std::endl;
+        LOG << "Address: " << info.memoryAddr << std::endl;
+        LOG << "Alloc method: ";
+        switch (info.allocMethod)
+        {
+        case MemoryAllocMethod::ByMalloc:
+            LOG << "malloc(" << info.sizeInfo.byMalloc.size << ")";
+            break;
+        case MemoryAllocMethod::ByCalloc:
+            LOG << "calloc(" << info.sizeInfo.byCalloc.num_of_element << ", " << info.sizeInfo.byCalloc.size_of_element << ")";
+            break;
+        default:
+            break;
+        }
+        LOG << std::endl;
+
+        LOG << "Stack trace: " << std::endl;
+        for (auto& stackFrame : info.stackTrace)
+        {
+            LOG << std::hex << stackFrame.funcAddr << std::dec << "\t" << stackFrame.moduleName << "!" << stackFrame.funcName << std::endl;
+        }
+        LOG << std::endl;
+    }
+}
+
 class Debugger
 {
 private:
     DWORD processId;
     HANDLE hProcess;
+    std::unordered_set<DWORD> allProcess;
     void init()
     {
         if (hProcess == NULL) {
@@ -273,12 +367,12 @@ public:
     }
     static BOOL PrintSymbol(PSYMBOL_INFO pSymInfo, ULONG SymbolSize, PVOID UserContext)
     {
-        std::cout << std::hex << pSymInfo->Address << std::dec << pSymInfo->Name << std::endl;
+        LOG << std::hex << pSymInfo->Address << std::dec << pSymInfo->Name << std::endl;
         return TRUE;
     }
     BOOL OnExceptionDebugEvent(DEBUG_EVENT* pDbgEvent)
     {
-        printf("Exception code: %x\n", pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode);
+        LOG << "Exception code: " << std::hex << pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode << std::dec << std::endl;
         if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == 0x80000003)
         {
             return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
@@ -288,7 +382,7 @@ public:
     BOOL OnLoadDllDebugEvent(DEBUG_EVENT* pDbgEvent)
     {
         GetFinalPathNameByHandleW(pDbgEvent->u.LoadDll.hFile, utf16_buffer, M_BUF_SIZ, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        printf("Load dll: %s\n", utf16toutf8(utf16_buffer, utf8_buffer, M_BUF_SIZ));
+        LOG << "Load dll: " << utf16toutf8(utf16_buffer, utf8_buffer, M_BUF_SIZ) << std::endl;
 
         DWORD64 retval = SymLoadModuleExW(hProcess, pDbgEvent->u.LoadDll.hFile, utf16_buffer, NULL, (DWORD64)pDbgEvent->u.LoadDll.lpBaseOfDll, 0, NULL, 0);
         DWORD err = GetLastError();
@@ -316,36 +410,22 @@ public:
         free(stringBuf);
         return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
     }
+    BOOL OnCreatePorcessDebugExent(DEBUG_EVENT* pDbgEvent)
+    {
+        LOG << "Create process: " << pDbgEvent->dwProcessId << std::endl;
+        allProcess.insert(pDbgEvent->dwProcessId);
+        return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
+    }
     BOOL OnExitProcessDebugEvent(DEBUG_EVENT* pDbgEvent, MemoryLogger& logger)
     {
-        std::cout << std::endl;
-        auto leak_memories = logger.get_leak_info();
-        for (auto& info : leak_memories)
-        {
-            std::cout << "Possible leak " << info.size() << " bytes." << std::endl;
-            std::cout << "Address: " << info.memoryAddr << std::endl;
-            std::cout << "Alloc method: ";
-            switch (info.allocMethod)
-            {
-            case MemoryAllocMethod::ByMalloc:
-                std::cout << "malloc(" << info.sizeInfo.byMalloc.size << ")";
-                break;
-            case MemoryAllocMethod::ByCalloc:
-                std::cout << "calloc(" << info.sizeInfo.byCalloc.num_of_element << ", " << info.sizeInfo.byCalloc.size_of_element << ")";
-                break;
-            default:
-                break;
-            }
-            std::cout << std::endl;
-
-            std::cout << "Stack trace: " << std::endl;
-            for (auto& stackFrame : info.stackTrace)
-            {
-                std::cout << std::hex << stackFrame.funcAddr << std::dec << "\t" << stackFrame.funcName << std::endl;
-            }
-            std::cout << std::endl;
+        LOG << "Exit process: " << pDbgEvent->dwProcessId << std::endl;
+        if (allProcess.find(pDbgEvent->dwProcessId) != allProcess.end()) {
+            allProcess.erase(pDbgEvent->dwProcessId);
         }
-
+        if (allProcess.empty()) {
+            PrintLeakMemoryInfo(logger);
+            return 0;
+        }
         return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
     }
 };

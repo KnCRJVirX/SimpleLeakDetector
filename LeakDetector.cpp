@@ -19,6 +19,7 @@ int main(int argc, char const *argv[])
     WCHAR processPathW[MAX_PATH];
     char dllPath[MAX_PATH] = {0};
     WCHAR dllPathW[MAX_PATH];
+    char logFilePath[MAX_PATH] = {0};
 
     for (size_t i = 0; i < argc; i++)
     {
@@ -26,6 +27,8 @@ int main(int argc, char const *argv[])
             strcpy(processPath, argv[++i]);
         } else if (!strcmp(argv[i], "-hooker")) {
             strcpy(dllPath, argv[++i]);
+        } else if (!strcmp(argv[i], "-log")) {
+            strcpy(logFilePath, argv[++i]);
         }
     }
 
@@ -43,6 +46,9 @@ int main(int argc, char const *argv[])
         GetFullPathNameA("MallocHooker.dll", MAX_PATH, dllPath, NULL);
     }
     utf8toutf16(dllPath, dllPathW, MAX_PATH);
+
+    // 日志文件
+    LOG.setLogFile(std::string(logFilePath));
 
     // 运行可执行文件，挂起，注入Hooker，继续运行
     STARTUPINFOW si = {0};
@@ -67,6 +73,7 @@ int main(int argc, char const *argv[])
         WaitForDebugEvent(&dbgEvent, INFINITE);
 
         // printf("Thread %-5d Debug event: %s\n", dbgEvent.dwThreadId, DebugEventToString(dbgEvent.dwDebugEventCode));
+        // LOG << "Thread " << dbgEvent.dwThreadId << " Debug event: " << DebugEventToString(dbgEvent.dwDebugEventCode) << std::endl;
 
         switch (dbgEvent.dwDebugEventCode)
         {
@@ -83,14 +90,20 @@ int main(int argc, char const *argv[])
         // case OUTPUT_DEBUG_STRING_EVENT:
         //     OnOutputDebugStringEvent(&dbgEvent);
         //     break;
+        case CREATE_PROCESS_DEBUG_EVENT:
+            debugger.OnCreatePorcessDebugExent(&dbgEvent);
+            break;
         case EXIT_PROCESS_DEBUG_EVENT:
-            debugger.OnExitProcessDebugEvent(&dbgEvent, logger);
+            if (debugger.OnExitProcessDebugEvent(&dbgEvent, logger) == 0) {
+                goto out;
+            }
             break;
         default:
             ContinueDebugEvent(dbgEvent.dwProcessId, dbgEvent.dwThreadId, DBG_CONTINUE);
             break;
         }
     }
-
+    out:
+    LOG << "All process exited, debug over." << std::endl;
     return 0;
 }
