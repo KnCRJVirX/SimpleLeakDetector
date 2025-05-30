@@ -33,22 +33,23 @@ int main(int argc, char const *argv[])
     }
 
     // 初始化可执行文件路径
-    if (processPath[0] == '\0')
-    {
+    if (processPath[0] == '\0') {
         std::cout << "Exe file path: ";
         fgets(processPath, MAX_PATH, stdin);
     }
     utf8toutf16(processPath, processPathW, MAX_PATH);
 
     // 初始化Hooker模块路径
-    if (dllPath[0] == '\0')
-    {
+    if (dllPath[0] == '\0') {
         GetFullPathNameA("MallocHooker.dll", MAX_PATH, dllPath, NULL);
     }
     utf8toutf16(dllPath, dllPathW, MAX_PATH);
 
     // 日志文件
-    LOG.setLogFile(std::string(logFilePath));
+    if (logFilePath[0] != '\0')
+    {
+        LOG.setLogFile(std::string(logFilePath));
+    }
 
     // 运行可执行文件，挂起，注入Hooker，继续运行
     STARTUPINFOW si = {0};

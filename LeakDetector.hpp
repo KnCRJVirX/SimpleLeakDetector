@@ -11,6 +11,7 @@
 #define LEAK_DETECTOR_MALLOC_CALL_EVENT 0xE00000F1
 #define LEAK_DETECTOR_CALLOC_CALL_EVENT 0xE00000F2
 #define LEAK_DETECTOR_FREE_CALL_EVENT 0xE00000F3
+#define LEAK_DETECTOR_REALLOC_CALL_EVENT 0xE00000F4
 
 #include <iostream>
 #include <fstream>
@@ -108,7 +109,8 @@ struct StackFrameInfo
 enum class MemoryAllocMethod
 {
     ByMalloc = 0,
-    ByCalloc = 1
+    ByCalloc = 1, 
+    ByRealloc = 2
 };
 
 // 内存块信息
@@ -127,6 +129,11 @@ struct MemoryBlockInfo
             size_t num_of_element;
             size_t size_of_element;
         } byCalloc;
+        struct ByRealloc
+        {
+            void* old_addr;
+            size_t new_size;
+        } byRealloc;
     } sizeInfo;
     bool is_free = false;
     std::vector<StackFrameInfo> stackTrace;
@@ -145,6 +152,13 @@ struct MemoryBlockInfo
         sizeInfo.byCalloc.num_of_element = _NumOfElem;
         sizeInfo.byCalloc.size_of_element = _SizeOfElem;
     }
+    MemoryBlockInfo(void* addr, void* _OldMemory, size_t _NewSize)
+    {
+        allocMethod = MemoryAllocMethod::ByRealloc;
+        memoryAddr = addr;
+        sizeInfo.byRealloc.old_addr = _OldMemory;
+        sizeInfo.byRealloc.new_size = _NewSize;
+    }
 
     // 获取内存块大小
     size_t size() const
@@ -153,6 +167,7 @@ struct MemoryBlockInfo
         {
         case MemoryAllocMethod::ByMalloc:   return sizeInfo.byMalloc.size;
         case MemoryAllocMethod::ByCalloc:   return sizeInfo.byCalloc.num_of_element * sizeInfo.byCalloc.size_of_element;
+        case MemoryAllocMethod::ByRealloc:   return sizeInfo.byRealloc.new_size;
         default:
             break;
         }
@@ -250,7 +265,7 @@ public:
         MemoryBlockInfo info{ret_memory, alloc_size};
         info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
 
-        log.insert({ret_memory, info});
+        log[ret_memory] = info;
         // LOG << "malloc(" << alloc_size << "), retval = " << std::hex << ret_memory << std::dec << std::endl;
         return DBG_CONTINUE;
     }
@@ -264,7 +279,7 @@ public:
         MemoryBlockInfo info{ret_memory, num_of_elem, siz_of_elem};
         info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
 
-        log.insert({ret_memory, info});
+        log[ret_memory] = info;
         // LOG << "calloc(" << num_of_elem << ", " << siz_of_elem << "), retval = " << std::hex << ret_memory << std::dec << std::endl;
         return DBG_CONTINUE;
     }
@@ -279,6 +294,22 @@ public:
         // LOG << "free(" << std::hex << free_memory << std::dec << ")" << std::endl;
         return DBG_CONTINUE;
     }
+    int on_realloc_call_event(DEBUG_EVENT* dbgEvent)
+    {
+        // 解析返回值和参数
+        void* ret_memory = (void*)dbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[0];
+        void* old_memory = (void*)dbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[1];
+        size_t new_size = (size_t)dbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[2];
+
+        MemoryBlockInfo info{ret_memory, old_memory, new_size};
+        info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
+
+        if (log.find(old_memory) != log.end()) {
+            log[old_memory].is_free = true;
+        }
+        log[ret_memory] = info;
+        return DBG_CONTINUE;
+    }
     // 根据ExceptionCode分发到handler
     int dispatch(DEBUG_EVENT* dbgEvent)
     {
@@ -289,6 +320,7 @@ public:
             case LEAK_DETECTOR_MALLOC_CALL_EVENT:   return on_malloc_call_event(dbgEvent);
             case LEAK_DETECTOR_CALLOC_CALL_EVENT:   return on_calloc_call_event(dbgEvent);
             case LEAK_DETECTOR_FREE_CALL_EVENT:     return on_free_call_event(dbgEvent);
+            case LEAK_DETECTOR_REALLOC_CALL_EVENT:     return on_realloc_call_event(dbgEvent);
             default:
                 break;
             }
@@ -327,6 +359,9 @@ void PrintLeakMemoryInfo(MemoryLogger& logger)
             break;
         case MemoryAllocMethod::ByCalloc:
             LOG << "calloc(" << info.sizeInfo.byCalloc.num_of_element << ", " << info.sizeInfo.byCalloc.size_of_element << ")";
+            break;
+        case MemoryAllocMethod::ByRealloc:
+            LOG << "realloc(" << std::hex << info.sizeInfo.byRealloc.old_addr << std::dec << ", " << info.sizeInfo.byRealloc.new_size << ")";
             break;
         default:
             break;

@@ -62,25 +62,10 @@ extern "C" void log_free(void* _Memory)
     freeHooker.hook();
 }
 
-typedef void*(*realloc_t)(void *,size_t);
-InlineHooker reallocHooker;
-extern "C" void* log_realloc(void *_Memory,size_t _NewSize)
-{
-    reallocHooker.unhook();
-
-    realloc_t originRealloc = reinterpret_cast<realloc_t>(reallocHooker.get_origin_func());
-    void* retval = originRealloc(_Memory, _NewSize);
-    Log(LEAK_DETECTOR_REALLOC_CALL_EVENT, {retval, _Memory, (void*)_NewSize});
-
-    reallocHooker.hook();
-    return retval;
-}
-
 // IAT 地址
 extern "C" void* __imp_malloc;
 extern "C" void* __imp_calloc;
 extern "C" void* __imp_free;
-extern "C" void* __imp_realloc;
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
 {
@@ -93,14 +78,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
 
         freeHooker = InlineHooker(*(void**)&__imp_free, (void*)log_free);
         freeHooker.hook();
-
-        reallocHooker = InlineHooker(*(void**)&__imp_realloc, (void*)log_realloc);
-        reallocHooker.hook();
     } else if (fdwReason == DLL_PROCESS_DETACH) {
         mallocHooker.unhook();
         callocHooker.unhook();
         freeHooker.unhook();
-        reallocHooker.unhook();
     }
     return TRUE;
 }
