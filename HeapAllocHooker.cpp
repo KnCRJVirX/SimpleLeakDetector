@@ -21,67 +21,70 @@ static inline int Log(unsigned int event, std::array<void*, 15> retval_and_args)
     return 0;
 }
 
-typedef void*(*malloc_t)(size_t);
-InlineHooker mallocHooker;
-extern "C" void* log_malloc(size_t _Size)
+typedef LPVOID(*HeapAlloc_t)(HANDLE, DWORD, SIZE_T);
+InlineHooker HeapAllocHooker;
+extern "C" LPVOID WINAPI log_HeapAlloc(HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes)
 {
-    mallocHooker.unhook();
+    HeapAllocHooker.unhook();
 
-    malloc_t originMalloc = reinterpret_cast<malloc_t>(mallocHooker.get_origin_func());
-    void* retval = originMalloc(_Size);
-    Log(LEAK_DETECTOR_MALLOC_CALL_EVENT, {retval, (void*)_Size});
+    HeapAlloc_t originHeapAlloc = reinterpret_cast<HeapAlloc_t>(HeapAllocHooker.get_origin_func());
+    LPVOID retval = originHeapAlloc(hHeap, dwFlags, dwBytes);
 
-    mallocHooker.hook();
+    Log(LEAK_DETECTOR_HEAPALLOC_CALL_EVENT, {retval, hHeap, (void*)dwFlags, (void*)dwBytes});
+
+    HeapAllocHooker.hook();
     return retval;
 }
 
-typedef void*(*calloc_t)(size_t, size_t);
-InlineHooker callocHooker;
-extern "C" void* log_calloc(size_t _NumOfElements,size_t _SizeOfElements)
+typedef LPVOID(*HeapReAlloc_t)(HANDLE, DWORD, LPVOID, SIZE_T);
+InlineHooker HeapReAllocHooker;
+extern "C" LPVOID WINAPI log_HeapReAlloc(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem, SIZE_T dwBytes)
 {
-    callocHooker.unhook();
+    HeapReAllocHooker.unhook();
 
-    calloc_t originCalloc = reinterpret_cast<calloc_t>(callocHooker.get_origin_func());
-    void* retval = originCalloc(_NumOfElements, _SizeOfElements);
-    Log(LEAK_DETECTOR_CALLOC_CALL_EVENT, {retval, (void*)_NumOfElements, (void*)_SizeOfElements});
+    HeapReAlloc_t originHeapReAlloc = reinterpret_cast<HeapReAlloc_t>(HeapReAllocHooker.get_origin_func());
+    LPVOID retval = originHeapReAlloc(hHeap, dwFlags, lpMem, dwBytes);
 
-    callocHooker.hook();
+    Log(LEAK_DETECTOR_HEAPREALLOC_CALL_EVENT, {retval, hHeap, (void*)dwFlags, lpMem, (void*)dwBytes});
+
+    HeapReAllocHooker.hook();
     return retval;
 }
 
-typedef void(*free_t)(void*);
-InlineHooker freeHooker;
-extern "C" void log_free(void* _Memory)
+typedef BOOL(*HeapFree_t)(HANDLE, DWORD, LPVOID);
+InlineHooker HeapFreeHooker;
+extern "C" BOOL WINAPI log_HeapFree(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem)
 {
-    freeHooker.unhook();
+    HeapFreeHooker.unhook();
 
-    free_t originFree = reinterpret_cast<free_t>(freeHooker.get_origin_func());
-    originFree(_Memory);
-    Log(LEAK_DETECTOR_FREE_CALL_EVENT, {nullptr, _Memory});
+    HeapFree_t originHeapFree = reinterpret_cast<HeapFree_t>(HeapFreeHooker.get_origin_func());
+    BOOL retval = originHeapFree(hHeap, dwFlags, lpMem);
 
-    freeHooker.hook();
+    Log(LEAK_DETECTOR_HEAPFREE_CALL_EVENT, {(void*)retval, hHeap, (void*)dwFlags, lpMem});
+
+    HeapFreeHooker.hook();
+    return retval;
 }
 
 // IAT 地址
-extern "C" void* __imp_malloc;
-extern "C" void* __imp_calloc;
-extern "C" void* __imp_free;
+extern "C" void* __imp_HeapAlloc;
+extern "C" void* __imp_HeapReAlloc;
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
 {
     if (fdwReason == DLL_PROCESS_ATTACH) {
-        mallocHooker = InlineHooker(*(void**)&__imp_malloc, (void*)log_malloc);
-        mallocHooker.hook();
+        HeapAllocHooker = InlineHooker(*(void**)&__imp_HeapAlloc, (void*)log_HeapAlloc);
+        HeapAllocHooker.hook();
 
-        callocHooker = InlineHooker(*(void**)&__imp_calloc, (void*)log_calloc);
-        callocHooker.hook();
+        HeapReAllocHooker = InlineHooker(*(void**)&__imp_HeapReAlloc, (void*)log_HeapReAlloc);
+        HeapReAllocHooker.hook();
 
-        freeHooker = InlineHooker(*(void**)&__imp_free, (void*)log_free);
-        freeHooker.hook();
+        HeapFreeHooker = InlineHooker((void*)GetProcAddress(GetModuleHandleW(TEXT("ntdll.dll")), "RtlFreeHeap"), (void*)log_HeapFree);
+        HeapFreeHooker.hook();
     } else if (fdwReason == DLL_PROCESS_DETACH) {
-        mallocHooker.unhook();
-        callocHooker.unhook();
-        freeHooker.unhook();
+        HeapAllocHooker.unhook();
+        HeapReAllocHooker.unhook();
+        HeapFreeHooker.unhook();
     }
     return TRUE;
 }

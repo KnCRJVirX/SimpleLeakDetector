@@ -14,11 +14,19 @@ set(CMAKE_CXX_FLAGS_DEBUG "-g")
 # 添加 C 模块为静态库（用 gcc 编译）
 add_library(injector STATIC Injector.c)
 
-# 添加 Hook 模块
+# 添加 MallocHooker 模块
 add_library(MallocHooker SHARED MallocHooker.cpp)
 # 指定输出文件名
 set_target_properties(MallocHooker PROPERTIES
     OUTPUT_NAME "MallocHooker"
+    PREFIX ""                             # 去掉前缀 "lib"
+)
+
+# 添加 HeapAllocHooker 模块
+add_library(HeapAllocHooker SHARED HeapAllocHooker.cpp)
+# 指定输出文件名
+set_target_properties(HeapAllocHooker PROPERTIES
+    OUTPUT_NAME "HeapAllocHooker"
     PREFIX ""                             # 去掉前缀 "lib"
 )
 

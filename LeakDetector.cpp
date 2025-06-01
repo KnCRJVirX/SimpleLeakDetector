@@ -6,6 +6,7 @@
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 #include "Utils.h"
 #include "LeakDetector.hpp"
@@ -17,16 +18,16 @@ int main(int argc, char const *argv[])
 
     char processPath[MAX_PATH] = {0};
     WCHAR processPathW[MAX_PATH];
-    char dllPath[MAX_PATH] = {0};
+    char dllPath[MAX_PATH] = "MallocHooker.dll";
     WCHAR dllPathW[MAX_PATH];
     char logFilePath[MAX_PATH] = {0};
 
     for (size_t i = 0; i < argc; i++)
     {
         if (!strcmp(argv[i], "-exe")) {
-            strcpy(processPath, argv[++i]);
+            gbktoutf8(argv[++i], processPath, MAX_PATH);
         } else if (!strcmp(argv[i], "-hooker")) {
-            strcpy(dllPath, argv[++i]);
+            gbktoutf8(argv[++i], dllPath, MAX_PATH);
         } else if (!strcmp(argv[i], "-log")) {
             strcpy(logFilePath, argv[++i]);
         }
@@ -36,14 +37,13 @@ int main(int argc, char const *argv[])
     if (processPath[0] == '\0') {
         std::cout << "Exe file path: ";
         fgets(processPath, MAX_PATH, stdin);
+        if (strchr(processPath, '\n')) *(strchr(processPath, '\n')) = 0;
     }
     utf8toutf16(processPath, processPathW, MAX_PATH);
 
     // 初始化Hooker模块路径
-    if (dllPath[0] == '\0') {
-        GetFullPathNameA("MallocHooker.dll", MAX_PATH, dllPath, NULL);
-    }
-    utf8toutf16(dllPath, dllPathW, MAX_PATH);
+    utf8toutf16(dllPath, utf16_buffer, M_BUF_SIZ);
+    GetFullPathNameW(utf16_buffer, MAX_PATH, dllPathW, NULL);
 
     // 日志文件
     if (logFilePath[0] != '\0')
@@ -63,48 +63,21 @@ int main(int argc, char const *argv[])
     PVOID pLoadLibraryW = (PVOID)GetProcAddress(GetModuleHandleW(TEXT("KERNEL32.dll")), "LoadLibraryW");
     InjectArgs injectArgs{pi.hProcess, pLoadLibraryW, dllPathW};
     CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)InjectThreadWork, (LPVOID)&injectArgs, 0, NULL);
+    // std::thread injectWork{InjectModuleToProcessByRemoteThread, pi.hProcess, pLoadLibraryW, dllPathW};
     ResumeThread(pi.hThread);
 
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pi.dwProcessId);
-    MemoryLogger logger{hProcess};
-    Debugger debugger{hProcess};
+    MemoryLeakDebugger debugger{hProcess};
     DEBUG_EVENT dbgEvent = {0};
-    while (1)
-    {
+    while (1) {
         WaitForDebugEvent(&dbgEvent, INFINITE);
 
-        // printf("Thread %-5d Debug event: %s\n", dbgEvent.dwThreadId, DebugEventToString(dbgEvent.dwDebugEventCode));
         // LOG << "Thread " << dbgEvent.dwThreadId << " Debug event: " << DebugEventToString(dbgEvent.dwDebugEventCode) << std::endl;
 
-        switch (dbgEvent.dwDebugEventCode)
-        {
-        case EXCEPTION_DEBUG_EVENT:
-            if (logger.dispatch(&dbgEvent) != DBG_CONTINUE){
-                debugger.OnExceptionDebugEvent(&dbgEvent);
-            } else {
-                ContinueDebugEvent(dbgEvent.dwProcessId, dbgEvent.dwThreadId, DBG_CONTINUE);
-            }
-            break;
-        case LOAD_DLL_DEBUG_EVENT:
-            debugger.OnLoadDllDebugEvent(&dbgEvent);
-            break;
-        // case OUTPUT_DEBUG_STRING_EVENT:
-        //     OnOutputDebugStringEvent(&dbgEvent);
-        //     break;
-        case CREATE_PROCESS_DEBUG_EVENT:
-            debugger.OnCreatePorcessDebugExent(&dbgEvent);
-            break;
-        case EXIT_PROCESS_DEBUG_EVENT:
-            if (debugger.OnExitProcessDebugEvent(&dbgEvent, logger) == 0) {
-                goto out;
-            }
-            break;
-        default:
-            ContinueDebugEvent(dbgEvent.dwProcessId, dbgEvent.dwThreadId, DBG_CONTINUE);
-            break;
-        }
+        debugger.dispatch(&dbgEvent);
+        if (debugger.is_debug_over()) goto out;
     }
     out:
-    LOG << "All process exited, debug over." << std::endl;
+    
     return 0;
 }
