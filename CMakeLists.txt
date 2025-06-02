@@ -16,6 +16,7 @@ add_library(injector STATIC Injector.c)
 
 # 添加 MallocHooker 模块
 add_library(MallocHooker SHARED MallocHooker.cpp)
+target_link_libraries(MallocHooker PRIVATE -static-libgcc -static-libstdc++)
 # 指定输出文件名
 set_target_properties(MallocHooker PROPERTIES
     OUTPUT_NAME "MallocHooker"
@@ -24,6 +25,7 @@ set_target_properties(MallocHooker PROPERTIES
 
 # 添加 HeapAllocHooker 模块
 add_library(HeapAllocHooker SHARED HeapAllocHooker.cpp)
+target_link_libraries(HeapAllocHooker PRIVATE -static-libgcc -static-libstdc++)
 # 指定输出文件名
 set_target_properties(HeapAllocHooker PROPERTIES
     OUTPUT_NAME "HeapAllocHooker"
@@ -34,4 +36,4 @@ set_target_properties(HeapAllocHooker PROPERTIES
 add_executable(LeakDetector LeakDetector.cpp)
 
 # 链接 C 静态库
-target_link_libraries(LeakDetector PRIVATE injector kernel32 user32 ntdll dbghelp)
+target_link_libraries(LeakDetector PRIVATE injector kernel32 user32 ntdll dbghelp -static-libgcc -static-libstdc++)
