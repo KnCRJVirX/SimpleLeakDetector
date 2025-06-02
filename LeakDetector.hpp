@@ -23,6 +23,8 @@
 #include <vector>
 #include <unordered_set>
 #include <map>
+#include <unordered_map>
+#include <thread>
 
 #include <windows.h>
 #include <dbghelp.h>
@@ -104,8 +106,10 @@ struct StackFrameInfo
     void* funcAddr;
     std::string funcName;
     std::string moduleName;
-    StackFrameInfo(): funcAddr(nullptr), funcName(""){}
-    StackFrameInfo(void* _Addr = nullptr, std::string _Name = "", std::string _Module = ""): funcAddr(_Addr), funcName(_Name), moduleName(_Module){}
+    StackFrameInfo(): funcAddr(nullptr), funcName(), moduleName(){}
+    StackFrameInfo(void* _Addr, std::string _Name = "", std::string _Module = ""): funcAddr(_Addr), funcName(_Name), moduleName(_Module){}
+    bool is_init() const
+    { return funcAddr != nullptr; }
 };
 
 // 内存块被获取的方法（用什么函数获取的堆内存）
@@ -219,8 +223,8 @@ class MemoryLogger
 private:
     friend class MemoryLeakDebugger;
     HANDLE hProcess;
-    std::map<void*, MemoryBlockInfo> log;
-    std::string get_func_name(DWORD64 funcAddr)
+    std::unordered_map<void*, MemoryBlockInfo> log;
+    void get_func_name(DWORD64 funcAddr, std::string& funcName)
     {
         char buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME] = {};
         PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
@@ -230,21 +234,19 @@ private:
 
         DWORD64 displacement = 0;
         if (SymFromAddr(hProcess, funcAddr, &displacement, pSymbol)) {
-            return std::string(pSymbol->Name);
+            funcName = std::string(pSymbol->Name);
         }
-        return "";
     }
-    std::string get_module_name(DWORD64 funcAddr)
+    void get_module_name(DWORD64 funcAddr, std::string& moduleName)
     {
         DWORD64 moduleBaseAddr = SymGetModuleBase64(hProcess, funcAddr);
-        if (moduleBaseAddr == (DWORD64)NULL) return "";
+        if (moduleBaseAddr == (DWORD64)NULL) return;
 
         IMAGEHLP_MODULE64 moduleInfo = {0};
         moduleInfo.SizeOfStruct = sizeof(IMAGEHLP_MODULE64);
         if (SymGetModuleInfo64(hProcess, moduleBaseAddr, &moduleInfo)) {
-            return std::string(moduleInfo.ModuleName);
+            moduleName = std::string(moduleInfo.ModuleName);
         }
-        return "";
     }
     std::vector<StackFrameInfo> get_stack_trace(DWORD threadId)
     {
@@ -272,7 +274,9 @@ private:
         frame.AddrStack.Mode   = AddrModeFlat;
 
         std::vector<StackFrameInfo> stackTrace;
-        for (int i = 0; i < 1024; ++i) {
+        stackTrace.resize(1024);
+        int i = 0;
+        for (; i < 1024; ++i) {
             if (!StackWalk64(machineType, hProcess, hThread, &frame, &context,
                 NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
                 break;
@@ -281,7 +285,12 @@ private:
             // 跳过RaiseException
             if (i < 2) continue;
 
-            stackTrace.push_back(StackFrameInfo((void*)frame.AddrPC.Offset, get_func_name(frame.AddrPC.Offset), get_module_name(frame.AddrPC.Offset)));
+            stackTrace[i - 2] = StackFrameInfo((void*)frame.AddrPC.Offset);
+            std::thread getFuncNameWork{&MemoryLogger::get_func_name, this, std::ref(frame.AddrPC.Offset), std::ref(stackTrace[i - 2].funcName)};
+            getFuncNameWork.detach();
+            std::thread getModuleNameWork{&MemoryLogger::get_module_name, this, std::ref(frame.AddrPC.Offset), std::ref(stackTrace[i - 2].moduleName)};
+            getModuleNameWork.detach();
+
             // LOG << "Address: " << std::hex << frame.AddrPC.Offset << std::dec << " Name: " << get_func_name(frame.AddrPC.Offset) << std::endl;
         }
 
@@ -648,6 +657,10 @@ public:
             LOG << "Stack trace: " << std::endl;
             for (auto& stackFrame : info.stackTrace)
             {
+                if (!stackFrame.is_init()) {
+                    break;
+                }
+                
                 LOG << std::hex << stackFrame.funcAddr << std::dec << "\t" << stackFrame.moduleName << "!" << stackFrame.funcName << std::endl;
             }
             LOG << std::endl;
