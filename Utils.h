@@ -51,28 +51,30 @@ typedef struct _LDR_DATA_TABLE_ENTRY_FULL {
 static char gbk_buffer[M_BUF_SIZ];
 static char utf8_buffer[M_BUF_SIZ];
 static wchar_t utf16_buffer[M_BUF_SIZ];
-static inline wchar_t* utf8toutf16(const char* utf8text, wchar_t* utf16text, size_t utf16text_size)
+static inline wchar_t* utf8toutf16(const char* utf8text, wchar_t* utf16text, int utf16text_size)
 {
     MultiByteToWideChar(CP_UTF8, 0, utf8text, -1, utf16text, utf16text_size);
     return utf16text;
 }
-static inline char* utf16toutf8(const wchar_t* utf16text, char* utf8text, size_t utf8text_size)
+static inline char* utf16toutf8(const wchar_t* utf16text, char* utf8text, int utf8text_size)
 {
     WideCharToMultiByte(CP_UTF8, 0, utf16text, -1, utf8text, utf8text_size, NULL, NULL);
     return utf8text;
 }
-static inline char* utf8togbk(const char* utf8text, char* gbktext, size_t gbktext_size)
+static inline char* utf8togbk(const char* utf8text, char* gbktext, int gbktext_size)
 {
-    wchar_t* utf16text = (wchar_t*)calloc((strlen(utf8text) + 1) * 2, sizeof(char));
-    MultiByteToWideChar(CP_UTF8, 0, utf8text, -1, utf16text, (strlen(utf8text) + 1) * 2);
+    int utf16_text_len = (strlen(utf8text) + 1) * 2;
+    wchar_t* utf16text = (wchar_t*)calloc(utf16_text_len, sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, utf8text, -1, utf16text, utf16_text_len);
     WideCharToMultiByte(936, 0, utf16text, -1, gbktext, gbktext_size, NULL, NULL);
     free(utf16text);
     return gbktext;
 }
 static inline char* gbktoutf8(const char* gbktext, char* utf8text, size_t utf8text_size)
 {
-    wchar_t* utf16text = (wchar_t*)calloc((strlen(gbktext) + 1) * 2, sizeof(char));
-    MultiByteToWideChar(936, 0, gbktext, -1, utf16text, (strlen(gbktext) + 1) * 2);
+    int utf16_text_len = (strlen(gbktext) + 1) * 2;
+    wchar_t* utf16text = (wchar_t*)calloc(utf16_text_len, sizeof(wchar_t));
+    MultiByteToWideChar(936, 0, gbktext, -1, utf16text, utf16_text_len);
     WideCharToMultiByte(CP_UTF8, 0, utf16text, -1, utf8text, utf8text_size, NULL, NULL);
     free(utf16text);
     return utf8text;

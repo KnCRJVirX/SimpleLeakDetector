@@ -27,7 +27,7 @@ extern "C" {
 #endif
 
 BOOL InjectThreadWork(PVOID injectArgs);
-BOOL InjectModuleToProcessByRemoteThread(HANDLE hProcess, PVOID pLoadLibraryW, LPCWSTR moduleName);
+BOOL InjectModuleToProcessByRemoteThread(DWORD processId, PVOID pLoadLibraryW, LPCWSTR moduleName);
 
 #ifdef __cplusplus
 }

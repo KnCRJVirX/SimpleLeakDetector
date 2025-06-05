@@ -22,12 +22,16 @@
 #include <string>
 #include <vector>
 #include <unordered_set>
-#include <map>
+#include <unordered_map>
+#include <chrono>
+#include <algorithm>
+#include <thread>
 
 #include <windows.h>
 #include <dbghelp.h>
 
 #include "Utils.h"
+#include "Injector.h"
 
 // 调试事件代码转换
 static inline const char* DebugEventToString(DWORD dbgEventCode)
@@ -153,18 +157,21 @@ struct MemoryBlockInfo
             SIZE_T dwBytes;
         } byHeapReAlloc;
     } sizeInfo;
-    bool is_free = false;
+    bool isFree = false;
+    std::chrono::time_point<std::chrono::steady_clock> allocTime;
     std::vector<StackFrameInfo> stackTrace;
 
     MemoryBlockInfo(){}
     MemoryBlockInfo(void* addr, size_t _size)
     {
+        allocTime = std::chrono::steady_clock::now();
         allocMethod = MemoryAllocMethod::ByMalloc;
         memoryAddr = addr;
-        sizeInfo.byMalloc.size = _size; 
+        sizeInfo.byMalloc.size = _size;
     }
     MemoryBlockInfo(void* addr, size_t _NumOfElem, size_t _SizeOfElem)
     {
+        allocTime = std::chrono::steady_clock::now();
         allocMethod = MemoryAllocMethod::ByCalloc;
         memoryAddr = addr;
         sizeInfo.byCalloc.num_of_element = _NumOfElem;
@@ -172,6 +179,7 @@ struct MemoryBlockInfo
     }
     MemoryBlockInfo(void* addr, void* _OldMemory, size_t _NewSize)
     {
+        allocTime = std::chrono::steady_clock::now();
         allocMethod = MemoryAllocMethod::ByRealloc;
         memoryAddr = addr;
         sizeInfo.byRealloc.old_addr = _OldMemory;
@@ -179,6 +187,7 @@ struct MemoryBlockInfo
     }
     MemoryBlockInfo(LPVOID addr, HANDLE _hHeap, DWORD _dwFlags, SIZE_T _dwBytes)
     {
+        allocTime = std::chrono::steady_clock::now();
         allocMethod = MemoryAllocMethod::ByHeapAlloc;
         memoryAddr = addr;
         sizeInfo.byHeapAlloc.hHeap = _hHeap;
@@ -187,6 +196,7 @@ struct MemoryBlockInfo
     }
     MemoryBlockInfo(LPVOID addr, HANDLE _hHeap, DWORD _dwFlags, LPVOID _lpMem, SIZE_T _dwBytes)
     {
+        allocTime = std::chrono::steady_clock::now();
         allocMethod = MemoryAllocMethod::ByHeapReAlloc;
         memoryAddr = addr;
         sizeInfo.byHeapReAlloc.hHeap = _hHeap;
@@ -219,7 +229,7 @@ class MemoryLogger
 private:
     friend class MemoryLeakDebugger;
     HANDLE hProcess;
-    std::map<void*, MemoryBlockInfo> log;
+    std::unordered_map<void*, MemoryBlockInfo> log;
     std::string get_func_name(DWORD64 funcAddr)
     {
         char buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME] = {};
@@ -272,7 +282,7 @@ private:
         frame.AddrStack.Mode   = AddrModeFlat;
 
         std::vector<StackFrameInfo> stackTrace;
-        for (int i = 0; i < 1024; ++i) {
+        for (int i = 0; i < 2048; ++i) {
             if (!StackWalk64(machineType, hProcess, hThread, &frame, &context,
                 NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
                 break;
@@ -328,7 +338,7 @@ public:
         void* free_memory = (void*)dbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[1];
         if (log.find(free_memory) != log.end())
         {
-            log[free_memory].is_free = true;
+            log[free_memory].isFree = true;
         }
         // LOG << "free(" << std::hex << free_memory << std::dec << ")" << std::endl;
         return DBG_CONTINUE;
@@ -342,13 +352,17 @@ public:
 
         // LOG << "realloc(" << std::hex << old_memory << std::dec << ", " << new_size << ")" << std::endl;
 
-        MemoryBlockInfo info{ret_memory, old_memory, new_size};
-        info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
-
         if (log.find(old_memory) != log.end()) {
-            log[old_memory].is_free = true;
+            log[old_memory].isFree = true;
         }
-        log[ret_memory] = info;
+
+        if (new_size != 0)
+        {
+            MemoryBlockInfo info{ret_memory, old_memory, new_size};
+            info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
+            log[ret_memory] = info;
+        }
+        
         return DBG_CONTINUE;
     }
     int on_HeapAlloc_call_event(DEBUG_EVENT* dbgEvent)
@@ -382,8 +396,16 @@ public:
         LPVOID oldAddr = (void*)dbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[3];
         SIZE_T dwBytes = (SIZE_T)dbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[4];
 
-        MemoryBlockInfo info{ret_memory, hHeap, dwFlags, oldAddr, dwBytes};
-        info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
+        if (log.find(oldAddr) != log.end()) {
+            log[oldAddr].isFree = true;
+        }
+
+        if (dwBytes != 0)
+        {
+            MemoryBlockInfo info{ret_memory, hHeap, dwFlags, oldAddr, dwBytes};
+            info.stackTrace = get_stack_trace(dbgEvent->dwThreadId);
+            log[ret_memory] = info;
+        }
 
         // LOG << "HeapReAlloc(" 
         //     << std::hex << hHeap << std::dec 
@@ -394,11 +416,6 @@ public:
         //     << std::hex << ret_memory << std::dec 
         //     << std::endl;
         
-        if (log.find(oldAddr) != log.end())
-        {
-            log[oldAddr].is_free = true;
-        }
-        log[ret_memory] = info;
         return DBG_CONTINUE;
     }
     int on_HeapFree_call_event(DEBUG_EVENT* dbgEvent)
@@ -410,7 +427,7 @@ public:
         LPVOID free_memory = (void*)dbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[3];
         if (log.find(free_memory) != log.end())
         {
-            log[free_memory].is_free = true;
+            log[free_memory].isFree = true;
         }
 
         // LOG << "HeapFree(" 
@@ -450,7 +467,7 @@ public:
         for (auto& [addr, info] : log)
         {
             // 记录未被free的内存块信息
-            if (!info.is_free)
+            if (!info.isFree)
             {
                 res.push_back(info);
             }
@@ -512,8 +529,11 @@ private:
     HANDLE hProcess;
     std::unordered_set<DWORD> allProcess;
     MemoryLogger logger;
+    std::wstring hookerPath;
+    std::chrono::time_point<std::chrono::steady_clock> startTime;
     void init()
     {
+        startTime = std::chrono::steady_clock::now();
         if (hProcess == NULL) {
             return;
         }
@@ -521,7 +541,7 @@ private:
         DWORD err = GetLastError();
     }
 public:
-    MemoryLeakDebugger(HANDLE _hProcess): processId(0), hProcess(_hProcess), logger(_hProcess)
+    MemoryLeakDebugger(HANDLE _hProcess, LPCWSTR _hookerPath): processId(0), hProcess(_hProcess), logger(_hProcess), hookerPath(_hookerPath)
     { init(); }
     ~MemoryLeakDebugger()
     {
@@ -536,10 +556,25 @@ public:
         if (logger.dispatch(pDbgEvent) == DBG_CONTINUE) {
             return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
         }
+
         // 若未处理则为其他普通异常
         LOG << "Exception code: " << std::hex << pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode << std::dec << std::endl;
-        if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == 0x80000003) {
+
+        // 入口断点时注入
+        if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_BREAKPOINT) {
+            PVOID pLoadLibraryW = (PVOID)GetProcAddress(GetModuleHandleW(TEXT("Kernel32.dll")), "LoadLibraryW");
+            std::thread injectWork{InjectModuleToProcessByRemoteThread, pDbgEvent->dwProcessId, pLoadLibraryW, hookerPath.data()};
+            injectWork.detach();
             return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
+        } 
+        // 栈错误时打印栈回溯
+        else if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_STACK_OVERFLOW || 
+                pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_STACK_BUFFER_OVERRUN ||
+                pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_INVALID_HANDLE) {
+            auto stackTrace = logger.get_stack_trace(pDbgEvent->dwThreadId);
+            for (auto& frame : stackTrace) {
+                LOG << frame.funcAddr << "\t" << frame.moduleName << "!" << frame.funcName << std::endl;
+            }
         }
         return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_EXCEPTION_NOT_HANDLED);
     }
@@ -593,12 +628,18 @@ public:
         }
         return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
     }
-    static void PrintLeakMemoryInfo(MemoryLogger& logger)
+    void PrintLeakMemoryInfo(MemoryLogger& logger)
     {
+        using namespace std::chrono;
+
+        auto leak_memories = logger.get_leak_info();
+        std::sort(leak_memories.begin(),
+                    leak_memories.end(),
+                    [](const MemoryBlockInfo& l, const MemoryBlockInfo& r){ return l.allocTime < r.allocTime; });
+
         LOG << std::endl;
         LOG << "----- Leak Memory Info Start -----" << std::endl;
         LOG << std::endl;
-        auto leak_memories = logger.get_leak_info();
         size_t totalLeakSize = 0, memoryBlockCnt = 0;
         for (auto& info : leak_memories)
         {
@@ -607,6 +648,10 @@ public:
             ++memoryBlockCnt;
 
             LOG << "Address: " << info.memoryAddr << std::endl;
+
+            auto offsetTime = duration_cast<milliseconds>(info.allocTime - this->startTime);
+            LOG << "Alloc time: " << "+ " << offsetTime.count() << " ms" << std::endl;
+
             LOG << "Alloc method: ";
             switch (info.allocMethod)
             {

@@ -10,7 +10,6 @@
 
 #include "Utils.h"
 #include "LeakDetector.hpp"
-#include "Injector.h"
 
 int main(int argc, char const *argv[])
 {
@@ -58,16 +57,16 @@ int main(int argc, char const *argv[])
     CreateProcessW(processPathW,
                     NULL,
                     NULL, NULL, FALSE,
-                    CREATE_SUSPENDED | DEBUG_PROCESS,
+                    DEBUG_PROCESS,
                     NULL, NULL, &si, &pi);
-    PVOID pLoadLibraryW = (PVOID)GetProcAddress(GetModuleHandleW(TEXT("KERNEL32.dll")), "LoadLibraryW");
-    InjectArgs injectArgs{pi.hProcess, pLoadLibraryW, dllPathW};
-    CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)InjectThreadWork, (LPVOID)&injectArgs, 0, NULL);
-    // std::thread injectWork{InjectModuleToProcessByRemoteThread, pi.hProcess, pLoadLibraryW, dllPathW};
-    ResumeThread(pi.hThread);
+    // PVOID pLoadLibraryW = (PVOID)GetProcAddress(GetModuleHandleW(TEXT("KERNEL32.dll")), "LoadLibraryW");
+    // InjectArgs injectArgs{pi.hProcess, pLoadLibraryW, dllPathW};
+    // CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)InjectThreadWork, (LPVOID)&injectArgs, 0, NULL);
+    // // std::thread injectWork{InjectModuleToProcessByRemoteThread, pi.hProcess, pLoadLibraryW, dllPathW};
+    // ResumeThread(pi.hThread);
 
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pi.dwProcessId);
-    MemoryLeakDebugger debugger{hProcess};
+    MemoryLeakDebugger debugger{hProcess, dllPathW};
     DEBUG_EVENT dbgEvent = {0};
     while (1) {
         WaitForDebugEvent(&dbgEvent, INFINITE);

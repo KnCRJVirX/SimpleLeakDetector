@@ -17,12 +17,12 @@ static inline int Log(unsigned int event, std::array<void*, 15> retval_and_args)
     // OutputDebugStringA(dbgStr);
 
     // 发送调试信息，第一个参数为返回值，后面为传入参数
-    RaiseException(event, 0, retval_and_args.size(), reinterpret_cast<ULONG_PTR*>(retval_and_args.data()));
+    RaiseException(event, 0, static_cast<DWORD>(retval_and_args.size()), reinterpret_cast<ULONG_PTR*>(retval_and_args.data()));
     return 0;
 }
 
 typedef LPVOID(*HeapAlloc_t)(HANDLE, DWORD, SIZE_T);
-InlineHooker HeapAllocHooker;
+MultiHooker HeapAllocHooker;
 extern "C" LPVOID WINAPI log_HeapAlloc(HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes)
 {
     HeapAllocHooker.unhook();
@@ -37,7 +37,7 @@ extern "C" LPVOID WINAPI log_HeapAlloc(HANDLE hHeap, DWORD dwFlags, SIZE_T dwByt
 }
 
 typedef LPVOID(*HeapReAlloc_t)(HANDLE, DWORD, LPVOID, SIZE_T);
-InlineHooker HeapReAllocHooker;
+MultiHooker HeapReAllocHooker;
 extern "C" LPVOID WINAPI log_HeapReAlloc(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem, SIZE_T dwBytes)
 {
     HeapReAllocHooker.unhook();
@@ -52,7 +52,7 @@ extern "C" LPVOID WINAPI log_HeapReAlloc(HANDLE hHeap, DWORD dwFlags, LPVOID lpM
 }
 
 typedef BOOL(*HeapFree_t)(HANDLE, DWORD, LPVOID);
-InlineHooker HeapFreeHooker;
+MultiHooker HeapFreeHooker;
 extern "C" BOOL WINAPI log_HeapFree(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem)
 {
     HeapFreeHooker.unhook();
@@ -66,20 +66,37 @@ extern "C" BOOL WINAPI log_HeapFree(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem)
     return retval;
 }
 
-// IAT 地址
-extern "C" void* __imp_HeapAlloc;
-extern "C" void* __imp_HeapReAlloc;
+bool HookFunc(MultiHooker& hooker, const std::vector<LPWSTR>& moduleList, LPCSTR funcName, PVOID hookFunc)
+{
+    HMODULE hModule = nullptr;
+    void* originFunc = nullptr;
+    for (auto& moduleName : moduleList)
+    {
+        if (hModule = GetModuleHandleW(moduleName)) {
+            void* funcAddr = nullptr;
+            if (funcAddr = reinterpret_cast<void*>(GetProcAddress(hModule, funcName))) {
+                if (originFunc == nullptr) {
+                    originFunc = funcAddr;
+                }
+                hooker.hookers.push_back(std::make_unique<InlineHooker>(funcAddr, hookFunc, GetCurrentProcessId()));
+            }
+        }
+    }
+    hooker.set_origin_func(originFunc);
+    return true;
+}
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
 {
     if (fdwReason == DLL_PROCESS_ATTACH) {
-        HeapAllocHooker = InlineHooker(*(void**)&__imp_HeapAlloc, (void*)log_HeapAlloc);
+        std::vector<LPWSTR> moduleList = {TEXT("ntdll.dll")};
+        
+        HookFunc(HeapAllocHooker, moduleList, "RtlAllocateHeap", (void*)log_HeapAlloc);
+        HookFunc(HeapReAllocHooker, moduleList, "RtlReAllocateHeap", (void*)log_HeapReAlloc);
+        HookFunc(HeapFreeHooker, moduleList, "RtlFreeHeap", (void*)log_HeapFree);
+
         HeapAllocHooker.hook();
-
-        HeapReAllocHooker = InlineHooker(*(void**)&__imp_HeapReAlloc, (void*)log_HeapReAlloc);
         HeapReAllocHooker.hook();
-
-        HeapFreeHooker = InlineHooker((void*)GetProcAddress(GetModuleHandleW(TEXT("ntdll.dll")), "RtlFreeHeap"), (void*)log_HeapFree);
         HeapFreeHooker.hook();
     } else if (fdwReason == DLL_PROCESS_DETACH) {
         HeapAllocHooker.unhook();

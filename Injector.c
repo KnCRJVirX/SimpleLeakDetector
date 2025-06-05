@@ -1,13 +1,14 @@
 #include "Injector.h"
 
-BOOL InjectThreadWork(PVOID injectArgs)
-{
-    InjectArgs* _args = (InjectArgs*)injectArgs;
-    return InjectModuleToProcessByRemoteThread(_args->hProcess, _args->pLoadLibraryW, _args->moduleName);
-}
+// BOOL InjectThreadWork(PVOID injectArgs)
+// {
+//     InjectArgs* _args = (InjectArgs*)injectArgs;
+//     return InjectModuleToProcessByRemoteThread(_args->hProcess, _args->pLoadLibraryW, _args->moduleName);
+// }
 
-BOOL InjectModuleToProcessByRemoteThread(HANDLE hProcess, PVOID pLoadLibraryW, LPCWSTR moduleName)
+BOOL InjectModuleToProcessByRemoteThread(DWORD processId, PVOID pLoadLibraryW, LPCWSTR moduleName)
 {
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
     HANDLE hRemoteThread = NULL;
     size_t moduleNameSize = 0;
     LPVOID hRemoteMem = NULL;
