@@ -4,12 +4,17 @@ project(SimpleLeakDetector LANGUAGES C CXX)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-# 设置构建类型（可选）
-set(CMAKE_BUILD_TYPE Debug)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
 
-# 添加调试符号（仅 Debug 模式下）
-set(CMAKE_C_FLAGS_DEBUG "-g")
-set(CMAKE_CXX_FLAGS_DEBUG "-g")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "Configuring Debug build")
+    add_compile_options(-g -O0 -DDEBUG)
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(STATUS "Configuring Release build")
+    add_compile_options(-O3 -DNDEBUG)
+endif()
 
 # 添加 C 模块为静态库（用 gcc 编译）
 add_library(injector STATIC Injector.c)

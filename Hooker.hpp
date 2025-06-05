@@ -164,7 +164,9 @@ private:
                 
                 if (!strcmp(pImport->Name, this->funcName.data())) {
                     // 保存原函数地址
-                    retval = (void*)pIAT[j].u1.Function;
+                    if (retval == nullptr) {
+                        retval = (void*)pIAT[j].u1.Function;
+                    }
                     
                     // 写入IAT
                     DWORD oldProt = 0;
@@ -217,6 +219,10 @@ public:
         
         hooked = false;
         return true;
+    }
+    void set_origin_func(void* originFunc)
+    {
+        this->originFuncAddr = originFunc;
     }
     void* get_origin_func() const
     { return originFuncAddr; }
