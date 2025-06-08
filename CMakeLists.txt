@@ -16,9 +16,6 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(-O3 -DNDEBUG)
 endif()
 
-# 添加 C 模块为静态库（用 gcc 编译）
-add_library(injector STATIC Injector.c)
-
 # 添加 MallocHooker 模块
 add_library(MallocHooker SHARED MallocHooker.cpp)
 target_link_libraries(MallocHooker PRIVATE -static-libgcc -static-libstdc++)
@@ -41,4 +38,4 @@ set_target_properties(HeapAllocHooker PROPERTIES
 add_executable(LeakDetector LeakDetector.cpp)
 
 # 链接 C 静态库
-target_link_libraries(LeakDetector PRIVATE injector kernel32 user32 ntdll dbghelp -static-libgcc -static-libstdc++)
+target_link_libraries(LeakDetector PRIVATE kernel32 user32 ntdll dbghelp -static-libgcc -static-libstdc++)

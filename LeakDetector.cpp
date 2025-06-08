@@ -18,8 +18,9 @@ int main(int argc, char const *argv[])
     char processPath[MAX_PATH] = {0};
     WCHAR processPathW[MAX_PATH];
     char dllPath[MAX_PATH] = "MallocHooker.dll";
+    // char dllPath[MAX_PATH] = "HeapAllocHooker.dll";
     WCHAR dllPathW[MAX_PATH];
-    char logFilePath[MAX_PATH] = {0};
+    char logFilePath[MAX_PATH] = "MemoryLeakDetect.log";
 
     for (size_t i = 0; i < argc; i++)
     {
@@ -38,15 +39,15 @@ int main(int argc, char const *argv[])
         fgets(processPath, MAX_PATH, stdin);
         if (strchr(processPath, '\n')) *(strchr(processPath, '\n')) = 0;
     }
-    utf8toutf16(processPath, processPathW, MAX_PATH);
+    utf8toutf16(processPath, utf16_buffer, MAX_PATH);
+    GetFullPathNameW(utf16_buffer, MAX_PATH, processPathW, NULL);
 
     // 初始化Hooker模块路径
     utf8toutf16(dllPath, utf16_buffer, M_BUF_SIZ);
     GetFullPathNameW(utf16_buffer, MAX_PATH, dllPathW, NULL);
 
     // 日志文件
-    if (logFilePath[0] != '\0')
-    {
+    if (logFilePath[0] != '\0') {
         LOG.setLogFile(std::string(logFilePath));
     }
 
@@ -59,11 +60,6 @@ int main(int argc, char const *argv[])
                     NULL, NULL, FALSE,
                     DEBUG_PROCESS,
                     NULL, NULL, &si, &pi);
-    // PVOID pLoadLibraryW = (PVOID)GetProcAddress(GetModuleHandleW(TEXT("KERNEL32.dll")), "LoadLibraryW");
-    // InjectArgs injectArgs{pi.hProcess, pLoadLibraryW, dllPathW};
-    // CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)InjectThreadWork, (LPVOID)&injectArgs, 0, NULL);
-    // // std::thread injectWork{InjectModuleToProcessByRemoteThread, pi.hProcess, pLoadLibraryW, dllPathW};
-    // ResumeThread(pi.hThread);
 
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pi.dwProcessId);
     MemoryLeakDebugger debugger{hProcess, dllPathW};
@@ -74,7 +70,7 @@ int main(int argc, char const *argv[])
         // LOG << "Thread " << dbgEvent.dwThreadId << " Debug event: " << DebugEventToString(dbgEvent.dwDebugEventCode) << std::endl;
 
         debugger.dispatch(&dbgEvent);
-        if (debugger.is_debug_over()) goto out;
+        if (debugger.isDebugOver()) goto out;
     }
     out:
     

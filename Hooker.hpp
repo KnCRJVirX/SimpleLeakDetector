@@ -183,7 +183,7 @@ private:
 public:
     bool is_init()
     { return hookFuncAddr && hProcess; }
-    IATHooker(): originFuncAddr(nullptr), hookFuncAddr(nullptr), hooked(false){}
+    IATHooker(): originFuncAddr(nullptr), hookFuncAddr(nullptr), hooked(false), hProcess(nullptr){}
     IATHooker(void* hookFuncAddr, LPCSTR targetFuncName, DWORD processId = 0)
     {
         if (processId) {
@@ -198,7 +198,7 @@ public:
     }
     ~IATHooker()
     {
-        if (this->hProcess != GetCurrentProcess()) {
+        if (this->hProcess != nullptr && this->hProcess != GetCurrentProcess()) {
             CloseHandle(hProcess);
         }
     }

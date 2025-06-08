@@ -31,7 +31,7 @@
 #include <dbghelp.h>
 
 #include "Utils.h"
-#include "Injector.h"
+#include "Injector.hpp"
 
 // 调试事件代码转换
 static inline const char* DebugEventToString(DWORD dbgEventCode)
@@ -58,9 +58,7 @@ class Log {
 private:
     std::ofstream logFile;
 
-    Log() {
-        logFile.open("MemoryLeakDetect.log");
-    }
+    Log() {}
 
     ~Log() {
         if (logFile.is_open())
@@ -289,7 +287,7 @@ private:
 
             if (frame.AddrPC.Offset == 0) break;
             // 跳过RaiseException
-            if (i < 2) continue;
+            // if (i < 2) continue;
 
             stackTrace.push_back(StackFrameInfo((void*)frame.AddrPC.Offset, get_func_name(frame.AddrPC.Offset), get_module_name(frame.AddrPC.Offset)));
             // LOG << "Address: " << std::hex << frame.AddrPC.Offset << std::dec << " Name: " << get_func_name(frame.AddrPC.Offset) << std::endl;
@@ -464,11 +462,9 @@ public:
     std::vector<MemoryBlockInfo> get_leak_info()
     {
         std::vector<MemoryBlockInfo> res;
-        for (auto& [addr, info] : log)
-        {
+        for (auto& [addr, info] : log) {
             // 记录未被free的内存块信息
-            if (!info.isFree)
-            {
+            if (!info.isFree) {
                 res.push_back(info);
             }
         }
@@ -531,6 +527,8 @@ private:
     MemoryLogger logger;
     std::wstring hookerPath;
     std::chrono::time_point<std::chrono::steady_clock> startTime;
+    DWORD64 entryPoint;
+    bool isInjected;
     void init()
     {
         startTime = std::chrono::steady_clock::now();
@@ -539,6 +537,7 @@ private:
         }
         BOOL retval = SymInitializeW(hProcess, TEXT("srv*C:\\Symbols*https://msdl.microsoft.com/download/symbols"), FALSE);
         DWORD err = GetLastError();
+        isInjected = false;
     }
 public:
     MemoryLeakDebugger(HANDLE _hProcess, LPCWSTR _hookerPath): processId(0), hProcess(_hProcess), logger(_hProcess), hookerPath(_hookerPath)
@@ -548,8 +547,26 @@ public:
         SymCleanup(hProcess);
         CloseHandle(hProcess);
     }
-    bool is_debug_over()
+    bool isDebugOver()
     { return allProcess.empty(); }
+    PPEB getPEBAddress() const {
+        PROCESS_BASIC_INFORMATION remoteProcessInfo = {0};
+        ULONG readSize = 0;
+
+        // 读取进程信息
+        NtQueryInformationProcess(hProcess, ProcessBasicInformation, &remoteProcessInfo, sizeof(remoteProcessInfo), &readSize);
+        if (readSize == 0) {
+            return nullptr;
+        }
+
+        return remoteProcessInfo.PebBaseAddress;
+    }
+    bool hideDebugger() {
+        PPEB pRemotePeb = getPEBAddress();
+        BYTE _Zero = 0;
+        WriteProcessMemory(hProcess, &(pRemotePeb->BeingDebugged), &_Zero, sizeof(BYTE), NULL);
+        return true;
+    }
     BOOL OnExceptionDebugEvent(DEBUG_EVENT* pDbgEvent)
     {
         // 优先给内存记录器处理，若已处理则继续
@@ -561,20 +578,34 @@ public:
         LOG << "Exception code: " << std::hex << pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode << std::dec << std::endl;
 
         // 入口断点时注入
-        if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_BREAKPOINT) {
-            PVOID pLoadLibraryW = (PVOID)GetProcAddress(GetModuleHandleW(TEXT("Kernel32.dll")), "LoadLibraryW");
-            std::thread injectWork{InjectModuleToProcessByRemoteThread, pDbgEvent->dwProcessId, pLoadLibraryW, hookerPath.data()};
-            injectWork.detach();
-            return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
-        } 
-        // 栈错误时打印栈回溯
-        else if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_STACK_OVERFLOW || 
-                pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_STACK_BUFFER_OVERRUN ||
-                pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_INVALID_HANDLE) {
+        if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_BREAKPOINT &&
+            !isInjected) {
+            LOG << "Debugbreak at: " << std::hex << pDbgEvent->u.Exception.ExceptionRecord.ExceptionAddress << std::dec << std::endl;
             auto stackTrace = logger.get_stack_trace(pDbgEvent->dwThreadId);
             for (auto& frame : stackTrace) {
                 LOG << frame.funcAddr << "\t" << frame.moduleName << "!" << frame.funcName << std::endl;
             }
+
+            HijackContextInjector(pDbgEvent->dwProcessId, this->hookerPath.data(), pDbgEvent->dwThreadId).inject();
+            isInjected = true;
+            return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
+        }
+
+        // 打印栈回溯
+        if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_STACK_OVERFLOW || 
+            pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_STACK_BUFFER_OVERRUN ||
+            pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_ACCESS_VIOLATION) {
+            auto stackTrace = logger.get_stack_trace(pDbgEvent->dwThreadId);
+            for (auto& frame : stackTrace) {
+                LOG << frame.funcAddr << "\t" << frame.moduleName << "!" << frame.funcName << std::endl;
+            }
+        }
+
+        // 打印试图访问的内存
+        if (pDbgEvent->u.Exception.ExceptionRecord.ExceptionCode == STATUS_ACCESS_VIOLATION) {
+            ULONG_PTR errAddr = pDbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[1];
+            ULONG_PTR op = pDbgEvent->u.Exception.ExceptionRecord.ExceptionInformation[0];
+            LOG << "Op = " << op << ", Address = " << std::hex << errAddr << std::dec << std::endl;
         }
         return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_EXCEPTION_NOT_HANDLED);
     }
@@ -613,15 +644,32 @@ public:
     {
         LOG << "Create process: " << pDbgEvent->dwProcessId << std::endl;
         allProcess.insert(pDbgEvent->dwProcessId);
+
+        // 加载模块符号
+        GetFinalPathNameByHandleW(pDbgEvent->u.CreateProcessInfo.hFile, utf16_buffer, M_BUF_SIZ, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        DWORD64 retval = SymLoadModuleExW(hProcess, pDbgEvent->u.CreateProcessInfo.hFile, utf16_buffer, NULL, (DWORD64)pDbgEvent->u.CreateProcessInfo.lpBaseOfImage, 0, NULL, 0);
+        DWORD err = GetLastError();
+
+        // 解析入口点
+        CREATE_PROCESS_DEBUG_INFO CreateProcessInfo = pDbgEvent->u.CreateProcessInfo;
+        DWORD64 imageBase = (DWORD64)CreateProcessInfo.lpBaseOfImage;
+        PIMAGE_DOS_HEADER pDosHead = (PIMAGE_DOS_HEADER)imageBase;
+        IMAGE_DOS_HEADER dosHeader = {0};
+        ReadProcessMemory(hProcess, pDosHead, &dosHeader, sizeof(dosHeader), NULL);
+        PIMAGE_NT_HEADERS pNtHead = (PIMAGE_NT_HEADERS)(imageBase + dosHeader.e_lfanew);
+        IMAGE_NT_HEADERS ntHeader = {0};
+        ReadProcessMemory(hProcess, pNtHead, &ntHeader, sizeof(ntHeader), NULL);
+        entryPoint = imageBase + ntHeader.OptionalHeader.AddressOfEntryPoint;
+
         return ContinueDebugEvent(pDbgEvent->dwProcessId, pDbgEvent->dwThreadId, DBG_CONTINUE);
     }
     BOOL OnExitProcessDebugEvent(DEBUG_EVENT* pDbgEvent)
     {
-        LOG << "Exit process: " << pDbgEvent->dwProcessId << std::endl;
+        LOG << "Exit process: " << pDbgEvent->dwProcessId << "  Exit code: " << pDbgEvent->u.ExitProcess.dwExitCode << std::endl;
         if (allProcess.find(pDbgEvent->dwProcessId) != allProcess.end()) {
             allProcess.erase(pDbgEvent->dwProcessId);
         }
-        if (is_debug_over()) {
+        if (isDebugOver()) {
             LOG << "All process exited, debug over." << std::endl;
             PrintLeakMemoryInfo(logger);
             return 0;
@@ -691,9 +739,11 @@ public:
             LOG << std::endl;
 
             LOG << "Stack trace: " << std::endl;
-            for (auto& stackFrame : info.stackTrace)
-            {
-                LOG << std::hex << stackFrame.funcAddr << std::dec << "\t" << stackFrame.moduleName << "!" << stackFrame.funcName << std::endl;
+            if (info.stackTrace.size() > 2) {
+                for (auto _it = info.stackTrace.begin() + 2; _it != info.stackTrace.end(); ++_it) {
+                    auto& stackFrame = *_it;
+                    LOG << std::hex << stackFrame.funcAddr << std::dec << "\t" << stackFrame.moduleName << "!" << stackFrame.funcName << std::endl;
+                }
             }
             LOG << std::endl;
         }

@@ -57,7 +57,7 @@ extern "C" BOOL WINAPI log_HeapFree(HANDLE hHeap, DWORD dwFlags, LPVOID lpMem)
     return retval;
 }
 
-extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
 {
     if (fdwReason == DLL_PROCESS_ATTACH && !HeapAllocHooker.is_init()) {
         HeapAllocHooker = IATHooker((void*)log_HeapAlloc, "HeapAlloc");
