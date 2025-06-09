@@ -8,6 +8,7 @@
 #define _UNICODE
 #endif
 
+#include <vector>
 #include <string>
 #include <memory>
 #include <algorithm>
